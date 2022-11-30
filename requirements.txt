@@ -2,6 +2,7 @@
 
 # Base ----------------------------------------
 gitpython
+boto3
 ipython  # interactive notebook
 matplotlib>=3.2.2
 numpy>=1.18.5
@@ -34,8 +35,8 @@ gdown
 
 # ByteTrack -------------------------------------------------------------------
 lap
-git+https://github.com/samson-wang/cython_bbox.git@9badb346a9222c98f828ba45c63fe3b7f2790ea2
-
+# git+git://github.com/samson-wang/cython_bbox.git@9badb346a9222c98f828ba45c63fe3b7f2790ea2
+cython_bbox
 # OCSORT ----------------------------------------------------------------------
 filterpy
 

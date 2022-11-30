@@ -10,7 +10,10 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import sys
 import numpy as np
+import boto3
 from pathlib import Path
+import yaml
+
 import torch
 import torch.backends.cudnn as cudnn
 
@@ -38,6 +41,52 @@ from trackers.multi_tracker_zoo import create_tracker
 
 # remove duplicated stream handler to avoid duplicated logging
 #logging.getLogger().removeHandler(logging.getLogger().handlers[0])
+
+# by zwang
+with open("config.yaml", "r") as yaml_file:
+    try:
+        LOGGER.info('loading config yaml...')
+        config = yaml.safe_load(yaml_file)
+    except yaml.YAMLError as exc:
+        LOGGER.error('config.yaml not exist', exc)
+        assert 0, 'exiting due to the absense of config.yaml'
+
+# by zwang, initiate boto3
+s3 = boto3.client('s3', region_name=config['reid_settings']['region'])
+                  # aws_access_key_id=CN_S3_AKI, aws_secret_access_key=CN_S3_SAK
+BUCKET_NAME = config['reid_settings']['s3_bucket']
+RESULT_ENDPOINT = config['reid_settings']['result_endpoint']
+LOCAL_TEMP_PATH = config['reid_settings']['local_temp_path']
+
+# by zwang, upload files to s3
+def upload_files(path_local, path_s3):
+    """
+    :param path_local: local path
+    :param path_s3: s3 path
+    """
+    if not upload_single_file(path_local, path_s3):
+        LOGGER.error(f'Upload files failed.')
+ 
+    LOGGER.info(f'Upload files successful.')
+
+
+def upload_single_file(src_local_path, dest_s3_path):
+    """
+    :param src_local_path:
+    :param dest_s3_path:
+    :return:
+    """
+    try:
+        with open(src_local_path, 'rb') as f:
+            s3.upload_fileobj(f, BUCKET_NAME, dest_s3_path)
+    except Exception as e:
+        LOGGER.error(f'Upload data failed. | src: {src_local_path} | dest: {dest_s3_path} | Exception: {e}')
+        return False
+    LOGGER.info(f'Uploading file successful. | src: {src_local_path} | dest: {dest_s3_path}')
+    return True
+
+
+track_data = {}
 
 @torch.no_grad()
 def run(
@@ -122,7 +171,11 @@ def run(
     #model.warmup(imgsz=(1 if pt else nr_sources, 3, *imgsz))  # warmup
     dt, seen = [0.0, 0.0, 0.0, 0.0], 0
     curr_frames, prev_frames = [None] * nr_sources, [None] * nr_sources
+    
     for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
+        
+        # LOGGER.info(tracker_list)
+
         t1 = time_sync()
         im = torch.from_numpy(im).to(device)
         im = im.half() if half else im.float()  # uint8 to fp16/32
@@ -173,7 +226,6 @@ def run(
             if hasattr(tracker_list[i], 'tracker') and hasattr(tracker_list[i].tracker, 'camera_update'):
                 if prev_frames[i] is not None and curr_frames[i] is not None:  # camera motion compensation
                     tracker_list[i].tracker.camera_update(prev_frames[i], curr_frames[i])
-
             if det is not None and len(det):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], im0.shape).round()  # xyxy
@@ -185,7 +237,35 @@ def run(
 
                 # pass detections to strongsort
                 t4 = time_sync()
-                outputs[i] = tracker_list[i].update(det.cpu(), im0)
+                outputs[i], removed_tracks = tracker_list[i].update(det.cpu(), im0)
+                # outputs[0] = [[[x0, y0, x1, y1], tid, t.cls], ...]
+                # LOGGER.info(outputs[i].tracker)
+
+                # zwang, save detection results
+                for out in outputs[i]:
+                    print(out[i])
+                    if out[4] in track_data.keys():
+                        # xyxy, frame id/timestamp, camera id
+                        track_data[out[4]].append([out[0:4], frame_idx, i])
+                    else:
+                        # initiate new track
+                        track_data[out[4]] = [[out[0:4], frame_idx, i]]
+                        filepath = os.path.join(LOCAL_TEMP_PATH, f'{out[4]}.jpg')
+                        save_one_box(out[0:4], imc, file=Path(filepath), BGR=True)
+                        path_s3 = os.path.join('./',  f'{out[4]}.jpg')
+                        upload_files(filepath, path_s3)
+
+                # zwang, send track to endpoint when removed
+                for t in removed_tracks:
+                    removed_track = track_data.pop(t.track_id)
+
+                    ################################
+                    # add post function here/zwang #
+                    ################################
+
+                    # r = requests.post(RESULT_ENDPOINT, data={'number': '12524', 'type': 'issue', 'action': 'show'})
+                    # LOGGER.info(track_data)
+
                 t5 = time_sync()
                 dt[3] += t5 - t4
 
@@ -214,9 +294,6 @@ def run(
                             label = None if hide_labels else (f'{id} {names[c]}' if hide_conf else \
                                 (f'{id} {conf:.2f}' if hide_class else f'{id} {names[c]} {conf:.2f}'))
                             annotator.box_label(bboxes, label, color=colors(c, True))
-                            if save_crop:
-                                txt_file_name = txt_file_name if (isinstance(path, list) and len(path) > 1) else ''
-                                save_one_box(bboxes, imc, file=save_dir / 'crops' / txt_file_name / names[c] / f'{id}' / f'{p.stem}.jpg', BGR=True)
 
                 LOGGER.info(f'{s}Done. yolo:({t3 - t2:.3f}s), {tracking_method}:({t5 - t4:.3f}s)')
 
@@ -290,7 +367,7 @@ def parse_opt():
     parser.add_argument('--hide-class', default=False, action='store_true', help='hide IDs')
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
-    parser.add_argument('--vid-stride', type=int, default=1, help='video frame-rate stride')
+    parser.add_argument('--vid-stride', type=int, default=30, help='video frame-rate stride')
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
     print_args(vars(opt))

@@ -8,7 +8,6 @@ import torch.nn.functional as F
 
 from yolov5.utils.general import xywh2xyxy, xyxy2xywh
 
-
 from trackers.bytetrack.kalman_filter import KalmanFilter
 from trackers.bytetrack import matching
 from trackers.bytetrack.basetrack import BaseTrack, TrackState
@@ -165,7 +164,7 @@ class BYTETracker(object):
         self.max_time_lost = self.buffer_size
         self.kalman_filter = KalmanFilter()
 
-    def update(self, dets, _):
+    def update(self, dets, img):
         self.frame_id += 1
         activated_starcks = []
         refind_stracks = []
@@ -278,6 +277,8 @@ class BYTETracker(object):
                 continue
             track.activate(self.kalman_filter, self.frame_id)
             activated_starcks.append(track)
+
+
         """ Step 5: Update state"""
         for track in self.lost_stracks:
             if self.frame_id - track.end_frame > self.max_time_lost:
@@ -309,7 +310,7 @@ class BYTETracker(object):
             output.append(t.cls)
             outputs.append(output)
 
-        return outputs
+        return [outputs, removed_stracks]
 
 
 def joint_stracks(tlista, tlistb):
