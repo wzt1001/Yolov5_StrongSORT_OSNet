@@ -19,8 +19,6 @@ if __name__ == '__main__':
         ret, frame = reader.read()
         frame = np.fromstring(frame, dtype='uint8')
 
-
-
 # rtmp://54.223.186.221/live/stream224
 # rtmp://54.223.186.221/live/stream234
 
@@ -31,3 +29,6 @@ if __name__ == '__main__':
 # run command
 # python track.py --classes 0 --source ./cam_list.txt --tracking-method bytetrack --reid-weights osnet_x0_25_market1501.pt --vid-stride 20
 # python track.py --classes 0 --source 0 --tracking-method bytetrack --reid-weights osnet_x0_25_market1501.pt --vid-stride 20
+
+
+# python track.py --classes 0 --source ./local_test.txt --tracking-method bytetrack --reid-weights osnet_x0_25_market1501.pt --vid-stride 20

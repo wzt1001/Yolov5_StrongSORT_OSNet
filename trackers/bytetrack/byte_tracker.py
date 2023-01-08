@@ -2,6 +2,7 @@ import numpy as np
 from collections import deque
 import os
 import os.path as osp
+import uuid
 import copy
 import torch
 import torch.nn.functional as F
@@ -48,7 +49,8 @@ class STrack(BaseTrack):
     def activate(self, kalman_filter, frame_id):
         """Start a new tracklet"""
         self.kalman_filter = kalman_filter
-        self.track_id = self.next_id()
+        # self.track_id = self.next_id()
+        self.track_id = str(uuid.uuid4())
         self.mean, self.covariance = self.kalman_filter.initiate(self.tlwh_to_xyah(self._tlwh))
 
         self.tracklet_len = 0
@@ -68,7 +70,8 @@ class STrack(BaseTrack):
         self.is_activated = True
         self.frame_id = frame_id
         if new_id:
-            self.track_id = self.next_id()
+            # self.track_id = self.next_id()
+            self.track_id = str(uuid.uuid4())
         self.score = new_track.score
         self.cls = new_track.cls
 

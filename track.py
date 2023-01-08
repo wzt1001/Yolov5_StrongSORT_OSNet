@@ -55,6 +55,7 @@ with open("config.yaml", "r") as yaml_file:
 s3 = boto3.client('s3', region_name=config['reid_settings']['region'])
                   # aws_access_key_id=CN_S3_AKI, aws_secret_access_key=CN_S3_SAK
 BUCKET_NAME = config['reid_settings']['s3_bucket']
+S3_LOCATION = config['reid_settings']['s3_location']
 RESULT_ENDPOINT = config['reid_settings']['result_endpoint']
 LOCAL_TEMP_PATH = config['reid_settings']['local_temp_path']
 
@@ -64,6 +65,8 @@ def upload_files(path_local, path_s3):
     :param path_local: local path
     :param path_s3: s3 path
     """
+    LOGGER.info(path_local)
+    LOGGER.info(path_s3)
     if not upload_single_file(path_local, path_s3):
         LOGGER.error(f'Upload files failed.')
  
@@ -252,7 +255,7 @@ def run(
                         track_data[out[4]] = [[out[0:4], frame_idx, i]]
                         filepath = os.path.join(LOCAL_TEMP_PATH, f'{out[4]}.jpg')
                         save_one_box(out[0:4], imc, file=Path(filepath), BGR=True)
-                        path_s3 = os.path.join('./',  f'{out[4]}.jpg')
+                        path_s3 = os.path.join(S3_LOCATION, f'{out[4]}.jpg')
                         upload_files(filepath, path_s3)
 
                 # zwang, send track to endpoint when removed
@@ -290,7 +293,7 @@ def run(
 
                         if save_vid or save_crop or show_vid:  # Add bbox to image
                             c = int(cls)  # integer class
-                            id = int(id)  # integer id
+                            id = str(id)  # integer id
                             label = None if hide_labels else (f'{id} {names[c]}' if hide_conf else \
                                 (f'{id} {conf:.2f}' if hide_class else f'{id} {names[c]} {conf:.2f}'))
                             annotator.box_label(bboxes, label, color=colors(c, True))
