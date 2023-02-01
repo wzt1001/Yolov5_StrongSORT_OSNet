@@ -17,6 +17,8 @@ import yaml
 import torch
 import torch.backends.cudnn as cudnn
 
+from boto import kinesis
+
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # yolov5 strongsort root directory
 WEIGHTS = ROOT / 'weights'
@@ -58,6 +60,8 @@ BUCKET_NAME = config['reid_settings']['s3_bucket']
 S3_LOCATION = config['reid_settings']['s3_location']
 RESULT_ENDPOINT = config['reid_settings']['result_endpoint']
 LOCAL_TEMP_PATH = config['reid_settings']['local_temp_path']
+
+kinesis_client=boto3.client('kinesis')
 
 # by zwang, upload files to s3
 def upload_files(path_local, path_s3):
@@ -124,7 +128,8 @@ def run(
         dnn=False,  # use OpenCV DNN for ONNX inference
         vid_stride=1,  # video frame-rate stride
 ):
-
+    print(vid_stride)
+    print('$$$$$')
     source = str(source)
     save_img = not nosave and not source.endswith('.txt')  # save inference images
     is_file = Path(source).suffix[1:] in (VID_FORMATS)
@@ -158,6 +163,7 @@ def run(
     else:
         dataset = LoadImages(source, img_size=imgsz, stride=stride, auto=pt)
         nr_sources = 1
+
     vid_path, vid_writer, txt_path = [None] * nr_sources, [None] * nr_sources, [None] * nr_sources
 
     # Create as many strong sort instances as there are video sources
@@ -175,8 +181,12 @@ def run(
     dt, seen = [0.0, 0.0, 0.0, 0.0], 0
     curr_frames, prev_frames = [None] * nr_sources, [None] * nr_sources
     
+    total_frame_cnt = 0
+
     for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
         
+        total_frame_cnt += 1
+        print('====== %s' % str(total_frame_cnt))
         # LOGGER.info(tracker_list)
 
         t1 = time_sync()
@@ -198,7 +208,7 @@ def run(
         pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
         dt[2] += time_sync() - t3
 
-        # Process detections
+        # Process detections, i is no. of cameras and det is dets from an single camera
         for i, det in enumerate(pred):  # detections per image
             seen += 1
             if webcam:  # nr_sources >= 1
@@ -246,7 +256,6 @@ def run(
 
                 # zwang, save detection results
                 for out in outputs[i]:
-                    print(out[i])
                     if out[4] in track_data.keys():
                         # xyxy, frame id/timestamp, camera id
                         track_data[out[4]].append([out[0:4], frame_idx, i])
@@ -255,12 +264,20 @@ def run(
                         track_data[out[4]] = [[out[0:4], frame_idx, i]]
                         filepath = os.path.join(LOCAL_TEMP_PATH, f'{out[4]}.jpg')
                         save_one_box(out[0:4], imc, file=Path(filepath), BGR=True)
-                        path_s3 = os.path.join(S3_LOCATION, f'{out[4]}.jpg')
-                        upload_files(filepath, path_s3)
+                        # path_s3 = os.path.join(S3_LOCATION, f'{out[4]}.jpg')
+                        # upload_files(filepath, path_s3)
 
                 # zwang, send track to endpoint when removed
                 for t in removed_tracks:
-                    removed_track = track_data.pop(t.track_id)
+                    print('------------ removed')
+                    print(t.track_id)
+                    print(t.max_score)
+                    print(t.max_size)
+                    kinesis.put_record("end-stream", json.dumps(new_dict), "partitionkey")
+                    # print(t.best_image)
+                    # print(t.large_image)
+                    # print(track_data)
+                    # removed_track = track_data.pop(t.track_id)
 
                     ################################
                     # add post function here/zwang #
@@ -298,7 +315,7 @@ def run(
                                 (f'{id} {conf:.2f}' if hide_class else f'{id} {names[c]} {conf:.2f}'))
                             annotator.box_label(bboxes, label, color=colors(c, True))
 
-                LOGGER.info(f'{s}Done. yolo:({t3 - t2:.3f}s), {tracking_method}:({t5 - t4:.3f}s)')
+                # LOGGER.info(f'{s}Done. yolo:({t3 - t2:.3f}s), {tracking_method}:({t5 - t4:.3f}s)')
 
             else:
                 #strongsort_list[i].increment_ages()
@@ -329,13 +346,13 @@ def run(
             prev_frames[i] = curr_frames[i]
 
     # Print results
-    t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
-    LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS, %.1fms {tracking_method} update per image at shape {(1, 3, *imgsz)}' % t)
-    if save_txt or save_vid:
-        s = f"\n{len(list(save_dir.glob('tracks/*.txt')))} tracks saved to {save_dir / 'tracks'}" if save_txt else ''
-        LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
-    if update:
-        strip_optimizer(yolo_weights)  # update model (to fix SourceChangeWarning)
+    # t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
+    # LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS, %.1fms {tracking_method} update per image at shape {(1, 3, *imgsz)}' % t)
+    # if save_txt or save_vid:
+    #     s = f"\n{len(list(save_dir.glob('tracks/*.txt')))} tracks saved to {save_dir / 'tracks'}" if save_txt else ''
+    #     LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
+    # if update:
+    #     strip_optimizer(yolo_weights)  # update model (to fix SourceChangeWarning)
 
 
 def parse_opt():

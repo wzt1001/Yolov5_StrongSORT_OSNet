@@ -6,12 +6,16 @@ import uuid
 import copy
 import torch
 import torch.nn.functional as F
+import cv2
+import base64
 
 from yolov5.utils.general import xywh2xyxy, xyxy2xywh
 
 from trackers.bytetrack.kalman_filter import KalmanFilter
 from trackers.bytetrack import matching
 from trackers.bytetrack.basetrack import BaseTrack, TrackState
+
+encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 100]
 
 class STrack(BaseTrack):
     shared_kalman = KalmanFilter()
@@ -34,6 +38,44 @@ class STrack(BaseTrack):
         self.mean, self.covariance = self.kalman_filter.predict(mean_state, self.covariance)
 
     @staticmethod
+    def extract_image_patch(image, bbox):
+        """Extract image patch from bounding box.
+        Parameters
+        ----------
+        image : ndarray
+            The full image.
+        bbox : array_like
+            The bounding box in format (x, y, width, height).
+        patch_shape : Optional[array_like]
+            This parameter can be used to enforce a desired patch shape
+            (height, width). First, the `bbox` is adapted to the aspect ratio
+            of the patch shape, then it is clipped at the image boundaries.
+            If None, the shape is computed from :arg:`bbox`.
+        Returns
+        -------
+        ndarray | NoneType
+            An image patch showing the :arg:`bbox`, optionally reshaped to
+            :arg:`patch_shape`.
+            Returns None if the bounding box is empty or fully outside of the image
+            boundaries.
+        """
+        bbox = np.array(bbox)
+
+        # convert to top left, bottom right
+        bbox[2:] += bbox[:2]
+        bbox = bbox.astype(np.int)
+
+        # clip at image boundaries
+        bbox[:2] = np.maximum(0, bbox[:2])
+
+        bbox[2:] = np.minimum(np.asarray(image.shape[:2][::-1]) - 1, bbox[2:])
+        if np.any(bbox[:2] >= bbox[2:]):
+            return None
+        sx, sy, ex, ey = bbox
+        image = image[sy:ey, sx:ex]
+        return image
+
+    @staticmethod
     def multi_predict(stracks):
         if len(stracks) > 0:
             multi_mean = np.asarray([st.mean.copy() for st in stracks])
@@ -46,13 +88,24 @@ class STrack(BaseTrack):
                 stracks[i].mean = mean
                 stracks[i].covariance = cov
 
-    def activate(self, kalman_filter, frame_id):
+    def activate(self, kalman_filter, frame_id, img):
         """Start a new tracklet"""
         self.kalman_filter = kalman_filter
         # self.track_id = self.next_id()
         self.track_id = str(uuid.uuid4())
         self.mean, self.covariance = self.kalman_filter.initiate(self.tlwh_to_xyah(self._tlwh))
-
+        
+        img_crop = self.extract_image_patch(img, self.tlwh)
+        if img_crop is not None:
+            retval, buffer = cv2.imencode('.jpg', img_crop, encode_param)
+            image_string = base64.b64encode(buffer).decode('utf-8')
+        else:
+            image_string = None
+        self.best_image = image_string
+        self.large_image = image_string
+        self.max_score = self.score
+        self.max_size = self._tlwh[2]*self._tlwh[3]
+        print('-------- new track activated max_score=%s, max_size=%s' % (str(self.max_score), str(self.max_size)))
         self.tracklet_len = 0
         self.state = TrackState.Tracked
         if frame_id == 1:
@@ -61,7 +114,7 @@ class STrack(BaseTrack):
         self.frame_id = frame_id
         self.start_frame = frame_id
 
-    def re_activate(self, new_track, frame_id, new_id=False):
+    def re_activate(self, new_track, frame_id, img, new_id=False):
         self.mean, self.covariance = self.kalman_filter.update(
             self.mean, self.covariance, self.tlwh_to_xyah(new_track.tlwh)
         )
@@ -72,10 +125,13 @@ class STrack(BaseTrack):
         if new_id:
             # self.track_id = self.next_id()
             self.track_id = str(uuid.uuid4())
+        if new_track.score > self.max_score:
+            ##### do something
+            pass
         self.score = new_track.score
         self.cls = new_track.cls
 
-    def update(self, new_track, frame_id):
+    def update(self, new_track, frame_id, img):
         """
         Update a matched track
         :type new_track: STrack
@@ -94,6 +150,30 @@ class STrack(BaseTrack):
         self.is_activated = True
 
         self.score = new_track.score
+        # print('------- new frame max_score %s, latest score %s' % (str(self.max_score), str(new_track.score)))
+        if new_track.score > self.max_score:
+            img_crop = self.extract_image_patch(img, new_track.tlwh)
+            if img_crop is not None:
+                retval, buffer = cv2.imencode('.jpg', img_crop, encode_param)
+                image_string = base64.b64encode(buffer).decode('utf-8')
+            else:
+                image_string = None
+            self.best_image = image_string
+            self.max_score = new_track.score
+            # print('!!!!!!!! track updated, new score: %s' % str(self.max_score))
+
+        new_size = (max(0, new_track.tlwh[0]) + new_track.tlwh[2]) * (max(0, new_track.tlwh[1]) + new_track.tlwh[3])
+        # print('------- new frame max_size %s, latest size %s' % (str(self.max_size), str(new_size)))
+        if new_size > self.max_size:
+            img_crop = self.extract_image_patch(img, new_track.tlwh)
+            if img_crop is not None:
+                retval, buffer = cv2.imencode('.jpg', img_crop, encode_param)
+                image_string = base64.b64encode(buffer).decode('utf-8')
+            else:
+                image_string = None
+            self.large_image = image_string
+            self.max_size = new_size
+            # print('!!!!!!!! track updated, new size: %s' % str(self.max_size))
 
     @property
     # @jit(nopython=True)
@@ -227,10 +307,10 @@ class BYTETracker(object):
             track = strack_pool[itracked]
             det = detections[idet]
             if track.state == TrackState.Tracked:
-                track.update(detections[idet], self.frame_id)
+                track.update(detections[idet], self.frame_id, img)
                 activated_starcks.append(track)
             else:
-                track.re_activate(det, self.frame_id, new_id=False)
+                track.re_activate(det, self.frame_id, img, new_id=False)
                 refind_stracks.append(track)
 
         ''' Step 3: Second association, with low score detection boxes'''
@@ -247,10 +327,10 @@ class BYTETracker(object):
             track = r_tracked_stracks[itracked]
             det = detections_second[idet]
             if track.state == TrackState.Tracked:
-                track.update(det, self.frame_id)
+                track.update(det, self.frame_id, img)
                 activated_starcks.append(track)
             else:
-                track.re_activate(det, self.frame_id, new_id=False)
+                track.re_activate(det, self.frame_id, img, new_id=False)
                 refind_stracks.append(track)
 
         for it in u_track:
@@ -266,7 +346,7 @@ class BYTETracker(object):
         dists = matching.fuse_score(dists, detections)
         matches, u_unconfirmed, u_detection = matching.linear_assignment(dists, thresh=0.7)
         for itracked, idet in matches:
-            unconfirmed[itracked].update(detections[idet], self.frame_id)
+            unconfirmed[itracked].update(detections[idet], self.frame_id, img)
             activated_starcks.append(unconfirmed[itracked])
         for it in u_unconfirmed:
             track = unconfirmed[it]
@@ -278,7 +358,7 @@ class BYTETracker(object):
             track = detections[inew]
             if track.score < self.det_thresh:
                 continue
-            track.activate(self.kalman_filter, self.frame_id)
+            track.activate(self.kalman_filter, self.frame_id, img)
             activated_starcks.append(track)
 
 
