@@ -1,6 +1,8 @@
 reid_settings:
+  
   s3_bucket: 'test-bucket-zt'
   s3_location: 'reid-test/'
   region: 'us-west-2'
   result_endpoint: 'http://the-address-where-u-want-to-push-results-to/abc'
   local_temp_path: './temp'
+  kinesis_stream_id: 'reid-digest'

@@ -7,17 +7,16 @@ os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
+import json
 
 import sys
 import numpy as np
 import boto3
 from pathlib import Path
 import yaml
-
+from datetime import datetime
 import torch
 import torch.backends.cudnn as cudnn
-
-from boto import kinesis
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # yolov5 strongsort root directory
@@ -60,6 +59,7 @@ BUCKET_NAME = config['reid_settings']['s3_bucket']
 S3_LOCATION = config['reid_settings']['s3_location']
 RESULT_ENDPOINT = config['reid_settings']['result_endpoint']
 LOCAL_TEMP_PATH = config['reid_settings']['local_temp_path']
+KINESIS_STREAM_ID = config['reid_settings']['kinesis_stream_id']
 
 kinesis_client=boto3.client('kinesis')
 
@@ -92,6 +92,18 @@ def upload_single_file(src_local_path, dest_s3_path):
     LOGGER.info(f'Uploading file successful. | src: {src_local_path} | dest: {dest_s3_path}')
     return True
 
+
+# to do!!!! ascyronize the function to avoid blockage
+def put_to_kinesis(track_id, max_score, max_size, best_image, large_image, frame_idx, current_time):
+    kinesis_client.put_record(StreamName=KINESIS_STREAM_ID, Data=json.dumps({
+        'track_id': track_id, 
+        'max_score': str(max_score), 
+        'max_size': str(max_size), 
+        'best_image': best_image, 
+        'large_image': large_image,
+        'frame_idx': frame_idx,
+        'current_time': current_time
+    }), PartitionKey="partitionkey")
 
 track_data = {}
 
@@ -270,10 +282,16 @@ def run(
                 # zwang, send track to endpoint when removed
                 for t in removed_tracks:
                     print('------------ removed')
+                    # {'ShardId': 'shardId-000000000001', 'SequenceNumber': '49637551416675302900361177921833649890934530126563508242', 'ResponseMetadata': {'RequestId': 'd5e21bdb-dd6d-455a-89b6-2cc9042594c0', 'HTTPStatusCode': 200, 'HTTPHeaders': {'x-amzn-requestid': 'd5e21bdb-dd6d-455a-89b6-2cc9042594c0', 'x-amz-id-2': 'FkjzFUpmWGtTPoPOf2Eg1ZpCQgoX8u/bOHrRyROf3OCndHWlbaT9lgYvBF+tRPyNNm072ZrvmVTOEf2Kee+j9FN4x+TShPKA', 'date': 'Wed, 01 Feb 2023 09:45:54 GMT', 'content-type': 'application/x-amz-json-1.1', 'content-length': '110'}, 'RetryAttempts': 0}}
+                    put_to_kinesis(track_id=t.track_id, max_score=str(t.max_score), max_size=str(t.max_size),
+                                     best_image=t.best_image, large_image=t.large_image, frame_idx=frame_idx, 
+                                     current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                    
+
                     print(t.track_id)
-                    print(t.max_score)
-                    print(t.max_size)
-                    kinesis.put_record("end-stream", json.dumps(new_dict), "partitionkey")
+                    print(t.best_image)
+                    print(t.large_image)
+                    print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
                     # print(t.best_image)
                     # print(t.large_image)
                     # print(track_data)
