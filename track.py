@@ -1,6 +1,10 @@
 import argparse
 
 import os
+import sys
+import threading
+import time
+from uuid import uuid4
 # limit the number of cpus used by high performance libraries
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -9,7 +13,6 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import json
 
-import sys
 import numpy as np
 import boto3
 from pathlib import Path
@@ -17,6 +20,23 @@ import yaml
 from datetime import datetime
 import torch
 import torch.backends.cudnn as cudnn
+
+from awscrt import mqtt
+
+# import utils.command_line_utils as command_line_utils
+# cmdUtils = command_line_utils.CommandLineUtils("PubSub - Send and recieve messages through an MQTT connection.")
+# cmdUtils.add_common_mqtt_commands()
+# cmdUtils.add_common_topic_message_commands()
+# cmdUtils.add_common_proxy_commands()
+# cmdUtils.add_common_logging_commands()
+# cmdUtils.register_command("key", "<path>", "Path to your key in PEM format.", True, str)
+# cmdUtils.register_command("cert", "<path>", "Path to your client certificate in PEM format.", True, str)
+# cmdUtils.register_command("port", "<int>", "Connection port. AWS IoT supports 443 and 8883 (optional, default=auto).", type=int)
+# cmdUtils.register_command("client_id", "<str>", "Client ID to use for MQTT connection (optional, default='test-*').", default="test-" + str(uuid4()))
+# cmdUtils.register_command("count", "<int>", "The number of messages to send (optional, default='10').", default=10, type=int)
+# cmdUtils.register_command("is_ci", "<str>", "If present the sample will run in CI mode (optional, default='None')")
+# # Needs to be called so the command utils parse the commands
+# cmdUtils.get_args()
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # yolov5 strongsort root directory
@@ -61,7 +81,10 @@ RESULT_ENDPOINT = config['reid_settings']['result_endpoint']
 LOCAL_TEMP_PATH = config['reid_settings']['local_temp_path']
 KINESIS_STREAM_ID = config['reid_settings']['kinesis_stream_id']
 
+# by zwang, read from 
+
 kinesis_client=boto3.client('kinesis')
+npy_file = []
 
 # by zwang, upload files to s3
 def upload_files(path_local, path_s3):
@@ -138,17 +161,34 @@ def run(
         hide_class=False,  # hide IDs
         half=False,  # use FP16 half-precision inference
         dnn=False,  # use OpenCV DNN for ONNX inference
-        vid_stride=1,  # video frame-rate stride
+        vid_stride=1,  # video frame-rate stride,
+        save_to_numpy_sample=False
 ):
-    print(vid_stride)
-    print('$$$$$')
     source = str(source)
-    save_img = not nosave and not source.endswith('.txt')  # save inference images
-    is_file = Path(source).suffix[1:] in (VID_FORMATS)
-    is_url = source.lower().startswith(('rtsp://', 'rtmp://', 'http://', 'https://'))
-    webcam = source.isnumeric() or source.endswith('.txt') or (is_url and not is_file)
-    if is_url and is_file:
-        source = check_file(source)  # download
+    # save_img = not nosave and not source.endswith('.txt')  # save inference images
+    
+    save_img = False
+    # is_file = Path(source).suffix[1:] in (VID_FORMATS)
+    
+    with open(source, 'r') as source_file:
+        data = source_file.read()
+    source_config = json.loads(data)
+    
+    if source_config['type'] == 'stream':
+        webcam = True
+        is_url = True
+        is_file = False
+    elif source_config['type'] == 'video_file':
+        webcam = False
+        is_url = False
+        is_file = True
+    else:
+        assert "source type not supported"
+
+    # is_url = source.lower().startswith(('rtsp://', 'rtmp://', 'http://', 'https://'))
+    # webcam = source.isnumeric() or source.endswith('.txt') or (is_url and not is_file)
+    # if is_url and is_file:
+    #     source = check_file(source)  # download
 
     # Directories
     if not isinstance(yolo_weights, list):  # single yolo model
@@ -167,13 +207,14 @@ def run(
     stride, names, pt = model.stride, model.names, model.pt
     imgsz = check_img_size(imgsz, s=stride)  # check image size
 
+    print(source_config)
     # Dataloader
     if webcam:
         show_vid = check_imshow()
-        dataset = LoadStreams(source, img_size=imgsz, stride=stride, auto=pt, vid_stride=vid_stride)
+        dataset = LoadStreams([i['url'] for i in source_config['source']], img_size=imgsz, stride=stride, auto=pt, vid_stride=vid_stride)
         nr_sources = len(dataset)
     else:
-        dataset = LoadImages(source, img_size=imgsz, stride=stride, auto=pt)
+        dataset = LoadImages([i['url'] for i in source_config['source']], img_size=imgsz, stride=stride, auto=pt)
         nr_sources = 1
 
     vid_path, vid_writer, txt_path = [None] * nr_sources, [None] * nr_sources, [None] * nr_sources
@@ -283,15 +324,17 @@ def run(
                 for t in removed_tracks:
                     print('------------ removed')
                     # {'ShardId': 'shardId-000000000001', 'SequenceNumber': '49637551416675302900361177921833649890934530126563508242', 'ResponseMetadata': {'RequestId': 'd5e21bdb-dd6d-455a-89b6-2cc9042594c0', 'HTTPStatusCode': 200, 'HTTPHeaders': {'x-amzn-requestid': 'd5e21bdb-dd6d-455a-89b6-2cc9042594c0', 'x-amz-id-2': 'FkjzFUpmWGtTPoPOf2Eg1ZpCQgoX8u/bOHrRyROf3OCndHWlbaT9lgYvBF+tRPyNNm072ZrvmVTOEf2Kee+j9FN4x+TShPKA', 'date': 'Wed, 01 Feb 2023 09:45:54 GMT', 'content-type': 'application/x-amz-json-1.1', 'content-length': '110'}, 'RetryAttempts': 0}}
-                    put_to_kinesis(track_id=t.track_id, max_score=str(t.max_score), max_size=str(t.max_size),
-                                     best_image=t.best_image, large_image=t.large_image, frame_idx=frame_idx, 
-                                     current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-                    
+                    # put_to_kinesis(track_id=t.track_id, max_score=str(t.max_score), max_size=str(t.max_size),
+                    #                  best_image=t.best_image, large_image=t.large_image, frame_idx=frame_idx, 
+                    #                  start_time=t.start_time, end_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                    npy_file.append({'track_id':t.track_id, 'max_score':str(t.max_score), 'max_size':str(t.max_size),
+                                     'best_image':t.best_image, 'large_image':t.large_image, 'frame_idx':frame_idx, 
+                                     'start_time': t.start_time, 'end_time':datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
 
-                    print(t.track_id)
-                    print(t.best_image)
-                    print(t.large_image)
-                    print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                    # print(t.track_id)
+                    # print(t.best_image)
+                    # print(t.large_image)
+                    # print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
                     # print(t.best_image)
                     # print(t.large_image)
                     # print(track_data)
@@ -363,6 +406,10 @@ def run(
 
             prev_frames[i] = curr_frames[i]
 
+    # save all results to a numpy file in root
+    if save_to_numpy_sample:
+        np.save("sample.npy", npy_file)
+
     # Print results
     # t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
     # LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS, %.1fms {tracking_method} update per image at shape {(1, 3, *imgsz)}' % t)
@@ -406,6 +453,7 @@ def parse_opt():
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
     parser.add_argument('--vid-stride', type=int, default=30, help='video frame-rate stride')
+    parser.add_argument('--save-to-numpy-sample', default=False, action='store_true', help='save tracks to a numpy file for further testing')
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
     print_args(vars(opt))

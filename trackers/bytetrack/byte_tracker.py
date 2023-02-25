@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 import cv2
 import base64
+from datetime import datetime
 
 from yolov5.utils.general import xywh2xyxy, xyxy2xywh
 
@@ -39,35 +40,11 @@ class STrack(BaseTrack):
 
     @staticmethod
     def extract_image_patch(image, bbox):
-        """Extract image patch from bounding box.
-        Parameters
-        ----------
-        image : ndarray
-            The full image.
-        bbox : array_like
-            The bounding box in format (x, y, width, height).
-        patch_shape : Optional[array_like]
-            This parameter can be used to enforce a desired patch shape
-            (height, width). First, the `bbox` is adapted to the aspect ratio
-            of the patch shape, then it is clipped at the image boundaries.
-            If None, the shape is computed from :arg:`bbox`.
-        Returns
-        -------
-        ndarray | NoneType
-            An image patch showing the :arg:`bbox`, optionally reshaped to
-            :arg:`patch_shape`.
-            Returns None if the bounding box is empty or fully outside of the image
-            boundaries.
-        """
-        bbox = np.array(bbox)
-
-        # convert to top left, bottom right
-        bbox[2:] += bbox[:2]
+        bbox = np.expand_dims(bbox, axis=0)
+        bbox = xywh2xyxy(bbox)[0]
         bbox = bbox.astype(np.int)
-
         # clip at image boundaries
         bbox[:2] = np.maximum(0, bbox[:2])
-
         bbox[2:] = np.minimum(np.asarray(image.shape[:2][::-1]) - 1, bbox[2:])
         if np.any(bbox[:2] >= bbox[2:]):
             return None
@@ -105,6 +82,7 @@ class STrack(BaseTrack):
         self.large_image = image_string
         self.max_score = self.score
         self.max_size = self._tlwh[2]*self._tlwh[3]
+        self.start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print('-------- new track activated max_score=%s, max_size=%s' % (str(self.max_score), str(self.max_size)))
         self.tracklet_len = 0
         self.state = TrackState.Tracked
@@ -378,6 +356,7 @@ class BYTETracker(object):
         self.lost_stracks = sub_stracks(self.lost_stracks, self.removed_stracks)
         self.removed_stracks.extend(removed_stracks)
         self.tracked_stracks, self.lost_stracks = remove_duplicate_stracks(self.tracked_stracks, self.lost_stracks)
+        
         # get scores of lost tracks
         output_stracks = [track for track in self.tracked_stracks if track.is_activated]
         outputs = []

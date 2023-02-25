@@ -1,0 +1,18 @@
+{
+	"source": 
+	[
+		{
+			"camera_id": "camera_1",
+			"url": "rtmp://69.230.192.222/live/dev_1597066078826143744",
+			"ip": "",
+			"floor_id": "B1"
+		},
+		{
+			"camera_id": "camera_1",
+			"url": "rtmp://69.230.192.222/live/dev_1597065880603336704",
+			"ip": "",
+			"floor_id": "B1"
+		}
+	],
+	"type": "stream"
+}

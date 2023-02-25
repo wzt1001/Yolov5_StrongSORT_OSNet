@@ -1,2 +1,0 @@
-../sample/reID-record-data/cam0/15.02.22.853.flv
-../sample/reID-record-data/cam1/15.02.21.715.flv
