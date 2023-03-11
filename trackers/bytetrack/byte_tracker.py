@@ -330,6 +330,7 @@ class BYTETracker(object):
             track = unconfirmed[it]
             track.mark_removed()
             removed_stracks.append(track)
+            # print('####')
 
         """ Step 4: Init new stracks"""
         for inew in u_detection:
@@ -345,18 +346,21 @@ class BYTETracker(object):
             if self.frame_id - track.end_frame > self.max_time_lost:
                 track.mark_removed()
                 removed_stracks.append(track)
+                # print('****')
+                # print('lost_stracks len')
+                # print(len(self.lost_stracks))
 
-        # print('Ramained match {} s'.format(t4-t3))
-
+        # print('Remained match {} s'.format(t4-t3))
+        print(len(self.lost_stracks), len(self.tracked_stracks), len(lost_stracks), len(lost_stracks))
         self.tracked_stracks = [t for t in self.tracked_stracks if t.state == TrackState.Tracked]
         self.tracked_stracks = joint_stracks(self.tracked_stracks, activated_starcks)
         self.tracked_stracks = joint_stracks(self.tracked_stracks, refind_stracks)
         self.lost_stracks = sub_stracks(self.lost_stracks, self.tracked_stracks)
         self.lost_stracks.extend(lost_stracks)
-        self.lost_stracks = sub_stracks(self.lost_stracks, self.removed_stracks)
+        # huge bug fixed here, plz first extend strack then substract from lost
         self.removed_stracks.extend(removed_stracks)
+        self.lost_stracks = sub_stracks(self.lost_stracks, self.removed_stracks)
         self.tracked_stracks, self.lost_stracks = remove_duplicate_stracks(self.tracked_stracks, self.lost_stracks)
-        
         # get scores of lost tracks
         output_stracks = [track for track in self.tracked_stracks if track.is_activated]
         outputs = []
@@ -371,6 +375,8 @@ class BYTETracker(object):
             output.append(tid)
             output.append(t.cls)
             outputs.append(output)
+        if len(removed_stracks) > 0:
+            print(dets[0])
 
         return [outputs, removed_stracks]
 

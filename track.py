@@ -179,7 +179,7 @@ def run(
         is_url = True
         is_file = False
     elif source_config['type'] == 'video_file':
-        webcam = False
+        webcam = True
         is_url = False
         is_file = True
     else:
@@ -207,7 +207,6 @@ def run(
     stride, names, pt = model.stride, model.names, model.pt
     imgsz = check_img_size(imgsz, s=stride)  # check image size
 
-    print(source_config)
     # Dataloader
     if webcam:
         show_vid = check_imshow()
@@ -227,6 +226,7 @@ def run(
         if hasattr(tracker_list[i], 'model'):
             if hasattr(tracker_list[i].model, 'warmup'):
                 tracker_list[i].model.warmup()
+    
     outputs = [None] * nr_sources
 
     # Run tracking
@@ -240,7 +240,6 @@ def run(
         
         total_frame_cnt += 1
         print('====== %s' % str(total_frame_cnt))
-        # LOGGER.info(tracker_list)
 
         t1 = time_sync()
         im = torch.from_numpy(im).to(device)
@@ -304,9 +303,6 @@ def run(
                 # pass detections to strongsort
                 t4 = time_sync()
                 outputs[i], removed_tracks = tracker_list[i].update(det.cpu(), im0)
-                # outputs[0] = [[[x0, y0, x1, y1], tid, t.cls], ...]
-                # LOGGER.info(outputs[i].tracker)
-
                 # zwang, save detection results
                 for out in outputs[i]:
                     if out[4] in track_data.keys():
@@ -322,7 +318,7 @@ def run(
 
                 # zwang, send track to endpoint when removed
                 for t in removed_tracks:
-                    print('------------ removed')
+                    # print('------------ removed')
                     # {'ShardId': 'shardId-000000000001', 'SequenceNumber': '49637551416675302900361177921833649890934530126563508242', 'ResponseMetadata': {'RequestId': 'd5e21bdb-dd6d-455a-89b6-2cc9042594c0', 'HTTPStatusCode': 200, 'HTTPHeaders': {'x-amzn-requestid': 'd5e21bdb-dd6d-455a-89b6-2cc9042594c0', 'x-amz-id-2': 'FkjzFUpmWGtTPoPOf2Eg1ZpCQgoX8u/bOHrRyROf3OCndHWlbaT9lgYvBF+tRPyNNm072ZrvmVTOEf2Kee+j9FN4x+TShPKA', 'date': 'Wed, 01 Feb 2023 09:45:54 GMT', 'content-type': 'application/x-amz-json-1.1', 'content-length': '110'}, 'RetryAttempts': 0}}
                     # put_to_kinesis(track_id=t.track_id, max_score=str(t.max_score), max_size=str(t.max_size),
                     #                  best_image=t.best_image, large_image=t.large_image, frame_idx=frame_idx, 
