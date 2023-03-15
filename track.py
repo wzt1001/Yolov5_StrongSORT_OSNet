@@ -2,6 +2,7 @@ import argparse
 
 import os
 import sys
+import base64
 import threading
 import time
 from uuid import uuid4
@@ -20,6 +21,7 @@ import yaml
 from datetime import datetime
 import torch
 import torch.backends.cudnn as cudnn
+import skimage
 
 from awscrt import mqtt
 
@@ -127,6 +129,18 @@ def put_to_kinesis(track_id, max_score, max_size, best_image, large_image, frame
         'frame_idx': frame_idx,
         'current_time': current_time
     }), PartitionKey="partitionkey")
+
+def save_image_from_base64(image_base64_string, img_path):
+    image_binary_data = base64_string_to_numpy_image(image_base64_string)
+    skimage.io.imsave(img_path, image_binary_data, plugin='imageio')
+    return img_path
+
+def base64_string_to_numpy_image(base64_string):
+    base64_binary_data = base64_string.encode('utf-8')
+    binary_data = base64.b64decode(base64_binary_data)
+    numpy_image_data = skimage.io.imread(binary_data, plugin='imageio')
+    # print(type(numpy_image_data))
+    return numpy_image_data
 
 track_data = {}
 
@@ -323,10 +337,23 @@ def run(
                     # put_to_kinesis(track_id=t.track_id, max_score=str(t.max_score), max_size=str(t.max_size),
                     #                  best_image=t.best_image, large_image=t.large_image, frame_idx=frame_idx, 
                     #                  start_time=t.start_time, end_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-                    npy_file.append({'track_id':t.track_id, 'max_score':str(t.max_score), 'max_size':str(t.max_size),
-                                     'best_image':t.best_image, 'large_image':t.large_image, 'frame_idx':frame_idx, 
-                                     'start_time': t.start_time, 'end_time':datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                    best_image_id = str(uuid4())
+                    large_image_id = str(uuid4())
+                    save_folder = datetime.now().strftime("%Y-%m-%d-%H")
+                    if not os.path.exists(os.path.join('temp', save_folder)):
+                        os.makedirs(os.path.join('temp', save_folder))
+                    best_image_path = os.path.join(S3_LOCATION, save_folder, f'{best_image_id}.jpg')
+                    best_image_temp_path = os.path.join('temp', save_folder, f'{best_image_id}.jpg')
+                    large_image_path = os.path.join(S3_LOCATION, save_folder, f'{large_image_id}.jpg')
+                    large_image_temp_path = os.path.join('temp', save_folder, f'{large_image_id}.jpg')
+                    save_image_from_base64(t.best_image, best_image_temp_path)
+                    save_image_from_base64(t.large_image, large_image_temp_path)
+                    upload_files(best_image_temp_path, best_image_path)
+                    upload_files(large_image_temp_path, large_image_path)
 
+                    npy_file.append({'track_id':t.track_id, 'max_score':str(t.max_score), 'max_size':str(t.max_size),
+                                     'best_image':best_image_path, 'large_image':large_image_path, 'frame_idx':frame_idx, 
+                                     'start_time': t.start_time, 'end_time':datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                     # print(t.track_id)
                     # print(t.best_image)
                     # print(t.large_image)

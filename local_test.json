@@ -3,13 +3,13 @@
 	[
 		{
 			"camera_id": "camera_1",
-			"url": "../sample/reID-record-data/cam0/15.02.22.853.flv",
+			"url": "../sample/reid-video-0201/A-1.mp4",
 			"ip": "",
 			"floor_id": "B1"
 		},
 		{
-			"camera_id": "camera_1",
-			"url": "../sample/reID-record-data/cam1/15.02.21.715.flv",
+			"camera_id": "camera_2",
+			"url": "../sample/reid-video-0201/A-2.mp4",
 			"ip": "",
 			"floor_id": "B1"
 		}
