@@ -348,12 +348,12 @@ def run(
                     large_image_temp_path = os.path.join('temp', save_folder, f'{large_image_id}.jpg')
                     save_image_from_base64(t.best_image, best_image_temp_path)
                     save_image_from_base64(t.large_image, large_image_temp_path)
-                    upload_files(best_image_temp_path, best_image_path)
-                    upload_files(large_image_temp_path, large_image_path)
-
+                    # upload_files(best_image_temp_path, best_image_path)
+                    # upload_files(large_image_temp_path, large_image_path)
+                    print(t.trajectory)
                     npy_file.append({'track_id':t.track_id, 'max_score':str(t.max_score), 'max_size':str(t.max_size),
                                      'best_image':best_image_path, 'large_image':large_image_path, 'frame_idx':frame_idx, 
-                                     'start_time': t.start_time, 'end_time':datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                                     'start_time': t.start_time, 'end_time':datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 'trajectory': t.trajectory})
                     # print(t.track_id)
                     # print(t.best_image)
                     # print(t.large_image)

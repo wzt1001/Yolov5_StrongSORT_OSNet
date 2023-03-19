@@ -31,6 +31,7 @@ class STrack(BaseTrack):
         self.score = score
         self.tracklet_len = 0
         self.cls = cls
+        self.trajectory = []
 
     def predict(self):
         mean_state = self.mean.copy()
@@ -80,8 +81,12 @@ class STrack(BaseTrack):
             image_string = None
         self.best_image = image_string
         self.large_image = image_string
+
+        # set max score, max size, append first trajectory entry
         self.max_score = self.score
         self.max_size = self._tlwh[2]*self._tlwh[3]
+        self.trajectory.append(self._tlwh.tolist())
+
         self.start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print('-------- new track activated max_score=%s, max_size=%s' % (str(self.max_score), str(self.max_size)))
         self.tracklet_len = 0
@@ -104,8 +109,29 @@ class STrack(BaseTrack):
             # self.track_id = self.next_id()
             self.track_id = str(uuid.uuid4())
         if new_track.score > self.max_score:
-            ##### do something
-            pass
+            img_crop = self.extract_image_patch(img, new_track.tlwh)
+            if img_crop is not None:
+                retval, buffer = cv2.imencode('.jpg', img_crop, encode_param)
+                image_string = base64.b64encode(buffer).decode('utf-8')
+            else:
+                image_string = None
+            self.best_image = image_string
+            self.max_score = new_track.score
+            # print('!!!!!!!! track reactivated, new score: %s' % str(self.max_score))
+        new_size = (max(0, new_track.tlwh[0]) + new_track.tlwh[2]) * (max(0, new_track.tlwh[1]) + new_track.tlwh[3])
+        # print('------- new frame max_size %s, latest size %s' % (str(self.max_size), str(new_size)))
+        if new_size > self.max_size:
+            img_crop = self.extract_image_patch(img, new_track.tlwh)
+            if img_crop is not None:
+                retval, buffer = cv2.imencode('.jpg', img_crop, encode_param)
+                image_string = base64.b64encode(buffer).decode('utf-8')
+            else:
+                image_string = None
+            self.large_image = image_string
+            self.max_size = new_size
+            # print('!!!!!!!! track reactivated, new size: %s' % str(self.max_size))
+        self.trajectory.append(self._tlwh.tolist())
+
         self.score = new_track.score
         self.cls = new_track.cls
 
@@ -152,6 +178,7 @@ class STrack(BaseTrack):
             self.large_image = image_string
             self.max_size = new_size
             # print('!!!!!!!! track updated, new size: %s' % str(self.max_size))
+        self.trajectory.append(self._tlwh.tolist())
 
     @property
     # @jit(nopython=True)
@@ -351,7 +378,7 @@ class BYTETracker(object):
                 # print(len(self.lost_stracks))
 
         # print('Remained match {} s'.format(t4-t3))
-        print(len(self.lost_stracks), len(self.tracked_stracks), len(lost_stracks), len(lost_stracks))
+        # print(len(self.lost_stracks), len(self.tracked_stracks), len(lost_stracks), len(lost_stracks))
         self.tracked_stracks = [t for t in self.tracked_stracks if t.state == TrackState.Tracked]
         self.tracked_stracks = joint_stracks(self.tracked_stracks, activated_starcks)
         self.tracked_stracks = joint_stracks(self.tracked_stracks, refind_stracks)
@@ -371,12 +398,14 @@ class BYTETracker(object):
             tlwh = np.expand_dims(tlwh, axis=0)
             xyxy = xywh2xyxy(tlwh)
             xyxy = np.squeeze(xyxy, axis=0)
+            # trajectory = t.trajectory
             output.extend(xyxy)
             output.append(tid)
             output.append(t.cls)
+            # output.append(trajectory)
             outputs.append(output)
-        if len(removed_stracks) > 0:
-            print(dets[0])
+        # if len(removed_stracks) > 0:
+        #     print(dets[0])
 
         return [outputs, removed_stracks]
 
