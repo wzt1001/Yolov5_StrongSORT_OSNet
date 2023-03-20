@@ -4,7 +4,8 @@ import os
 import sys
 import base64
 import threading
-import time
+# import time
+# import logging
 from uuid import uuid4
 # limit the number of cpus used by high performance libraries
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -22,23 +23,10 @@ from datetime import datetime
 import torch
 import torch.backends.cudnn as cudnn
 import skimage
+from flask import Flask, request, jsonify, Response
 
-from awscrt import mqtt
-
-# import utils.command_line_utils as command_line_utils
-# cmdUtils = command_line_utils.CommandLineUtils("PubSub - Send and recieve messages through an MQTT connection.")
-# cmdUtils.add_common_mqtt_commands()
-# cmdUtils.add_common_topic_message_commands()
-# cmdUtils.add_common_proxy_commands()
-# cmdUtils.add_common_logging_commands()
-# cmdUtils.register_command("key", "<path>", "Path to your key in PEM format.", True, str)
-# cmdUtils.register_command("cert", "<path>", "Path to your client certificate in PEM format.", True, str)
-# cmdUtils.register_command("port", "<int>", "Connection port. AWS IoT supports 443 and 8883 (optional, default=auto).", type=int)
-# cmdUtils.register_command("client_id", "<str>", "Client ID to use for MQTT connection (optional, default='test-*').", default="test-" + str(uuid4()))
-# cmdUtils.register_command("count", "<int>", "The number of messages to send (optional, default='10').", default=10, type=int)
-# cmdUtils.register_command("is_ci", "<str>", "If present the sample will run in CI mode (optional, default='None')")
-# # Needs to be called so the command utils parse the commands
-# cmdUtils.get_args()
+# initiate flask app
+app = Flask(__name__)
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # yolov5 strongsort root directory
@@ -53,7 +41,6 @@ if str(ROOT / 'trackers' / 'strong_sort') not in sys.path:
 
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
-import logging
 from yolov5.models.common import DetectMultiBackend
 from yolov5.utils.dataloaders import VID_FORMATS, LoadImages, LoadStreams
 from yolov5.utils.general import (LOGGER, check_img_size, non_max_suppression, scale_boxes, check_requirements, cv2,
@@ -62,8 +49,38 @@ from yolov5.utils.torch_utils import select_device, time_sync
 from yolov5.utils.plots import Annotator, colors, save_one_box
 from trackers.multi_tracker_zoo import create_tracker
 
-# remove duplicated stream handler to avoid duplicated logging
-#logging.getLogger().removeHandler(logging.getLogger().handlers[0])
+opt = {
+        'yolo_weights': ['./weights/yolov5m.pt'],
+        'reid_weights': './weights/osnet_x0_25_market1501.pt',
+        'tracking_method': 'bytetrack',
+        'source': './local_test.json',
+        'imgsz': [640, 640],
+        'conf_thres': 0.5,
+        'iou_thres': 0.5,
+        'max_det': 1000,
+        'device': '',
+        'show_vid': False,
+        'save_txt': False,
+        'save_conf': False,
+        'save_crop': False,
+        'save_vid': False,
+        'nosave': False,
+        'classes': [0],
+        'agnostic_nms': False,
+        'augment': False,
+        'visualize': False,
+        'update': False,
+        'project': 'runs/track',
+        'name': 'exp',
+        'exist_ok': False,
+        'line_thickness': 2,
+        'hide_labels': False,
+        'hide_conf': False,
+        'hide_class': False,
+        'half': False,
+        'dnn': False,
+        'use_local_json_file': False
+    }
 
 # by zwang
 with open("config.yaml", "r") as yaml_file:
@@ -83,10 +100,18 @@ RESULT_ENDPOINT = config['reid_settings']['result_endpoint']
 LOCAL_TEMP_PATH = config['reid_settings']['local_temp_path']
 KINESIS_STREAM_ID = config['reid_settings']['kinesis_stream_id']
 
-# by zwang, read from 
-
 kinesis_client=boto3.client('kinesis')
 npy_file = []
+
+def download_single_file_from_s3(src_s3_path, src_local_path):
+    """download a single file to local from S3 path"""
+    try:
+        s3.download_file(BUCKET_NAME, src_s3_path, src_local_path)
+    except Exception as e:
+        LOGGER.error(f'Download data failed. | src: {src_s3_path} | dest: {src_local_path} | Exception: {e}')
+        return False
+    LOGGER.info(f'Download file successful. | src: {src_s3_path} | dest: {src_local_path}')
+    return True
 
 # by zwang, upload files to s3
 def upload_files(path_local, path_s3):
@@ -94,13 +119,12 @@ def upload_files(path_local, path_s3):
     :param path_local: local path
     :param path_s3: s3 path
     """
-    LOGGER.info(path_local)
-    LOGGER.info(path_s3)
-    if not upload_single_file(path_local, path_s3):
+    # LOGGER.info(path_local)
+    # LOGGER.info(path_s3)
+    if not upload_single_file_to_s3_async(path_local, path_s3):
         LOGGER.error(f'Upload files failed.')
  
     LOGGER.info(f'Upload files successful.')
-
 
 def upload_single_file(src_local_path, dest_s3_path):
     """
@@ -117,6 +141,12 @@ def upload_single_file(src_local_path, dest_s3_path):
     LOGGER.info(f'Uploading file successful. | src: {src_local_path} | dest: {dest_s3_path}')
     return True
 
+def upload_single_file_to_s3_async(src_local_path, dest_s3_path):
+    '''upload an local file to s3 ascynronously
+    '''
+    t = threading.Thread(target=upload_single_file, args=(src_local_path, dest_s3_path))
+    t.start()
+    return
 
 # to do!!!! ascyronize the function to avoid blockage
 def put_to_kinesis(track_id, max_score, max_size, best_image, large_image, frame_idx, current_time):
@@ -176,18 +206,29 @@ def run(
         half=False,  # use FP16 half-precision inference
         dnn=False,  # use OpenCV DNN for ONNX inference
         vid_stride=1,  # video frame-rate stride,
-        save_to_numpy_sample=False
+        save_to_numpy_sample=False, # save results to numpy as a sample for re-id
+        use_local_json_file=False, # using 
 ):
-    source = str(source)
-    # save_img = not nosave and not source.endswith('.txt')  # save inference images
-    
-    save_img = False
-    # is_file = Path(source).suffix[1:] in (VID_FORMATS)
-    
-    with open(source, 'r') as source_file:
-        data = source_file.read()
-    source_config = json.loads(data)
-    
+
+    if use_local_json_file:
+        source = str(source)
+        # save_img = not nosave and not source.endswith('.txt')  # save inference images
+        
+        save_img = False
+        # is_file = Path(source).suffix[1:] in (VID_FORMATS)
+        
+        with open(source, 'r') as source_file:
+            data = source_file.read()
+        try: 
+            source_config = json.loads(data)
+        except:
+            LOGGER.error('loading json file failed')
+    else:
+        try:
+            source_config = json.loads(source)
+        except:
+            LOGGER.error('loading source from request failed')
+
     if source_config['type'] == 'stream':
         webcam = True
         is_url = True
@@ -325,8 +366,8 @@ def run(
                     else:
                         # initiate new track
                         track_data[out[4]] = [[out[0:4], frame_idx, i]]
-                        filepath = os.path.join(LOCAL_TEMP_PATH, f'{out[4]}.jpg')
-                        save_one_box(out[0:4], imc, file=Path(filepath), BGR=True)
+                        # filepath = os.path.join(LOCAL_TEMP_PATH, f'{out[4]}.jpg')
+                        # save_one_box(out[0:4], imc, file=Path(filepath), BGR=True)
                         # path_s3 = os.path.join(S3_LOCATION, f'{out[4]}.jpg')
                         # upload_files(filepath, path_s3)
 
@@ -337,24 +378,22 @@ def run(
                     # put_to_kinesis(track_id=t.track_id, max_score=str(t.max_score), max_size=str(t.max_size),
                     #                  best_image=t.best_image, large_image=t.large_image, frame_idx=frame_idx, 
                     #                  start_time=t.start_time, end_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-                    best_image_id = str(uuid4())
-                    large_image_id = str(uuid4())
+                    image_id = t.track_id
                     save_folder = datetime.now().strftime("%Y-%m-%d-%H")
                     if not os.path.exists(os.path.join('temp', save_folder)):
                         os.makedirs(os.path.join('temp', save_folder))
-                    best_image_path = os.path.join(S3_LOCATION, save_folder, f'{best_image_id}.jpg')
-                    best_image_temp_path = os.path.join('temp', save_folder, f'{best_image_id}.jpg')
-                    large_image_path = os.path.join(S3_LOCATION, save_folder, f'{large_image_id}.jpg')
-                    large_image_temp_path = os.path.join('temp', save_folder, f'{large_image_id}.jpg')
+                    best_image_path = os.path.join(S3_LOCATION, save_folder, f'{image_id}-best.jpg')
+                    best_image_temp_path = os.path.join('temp', save_folder, f'{image_id}-best.jpg')
+                    large_image_path = os.path.join(S3_LOCATION, save_folder, f'{image_id}-large.jpg')
+                    large_image_temp_path = os.path.join('temp', save_folder, f'{image_id}-large.jpg')
                     save_image_from_base64(t.best_image, best_image_temp_path)
                     save_image_from_base64(t.large_image, large_image_temp_path)
-                    # upload_files(best_image_temp_path, best_image_path)
-                    # upload_files(large_image_temp_path, large_image_path)
-                    print(t.trajectory)
+                    upload_files(best_image_temp_path, best_image_path)
+                    upload_files(large_image_temp_path, large_image_path)
                     npy_file.append({'track_id':t.track_id, 'max_score':str(t.max_score), 'max_size':str(t.max_size),
                                      'best_image':best_image_path, 'large_image':large_image_path, 'frame_idx':frame_idx, 
                                      'start_time': t.start_time, 'end_time':datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 'trajectory': t.trajectory})
-                    # print(t.track_id)
+                    # print(t.track_id) 3f9c
                     # print(t.best_image)
                     # print(t.large_image)
                     # print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -442,52 +481,52 @@ def run(
     # if update:
     #     strip_optimizer(yolo_weights)  # update model (to fix SourceChangeWarning)
 
+# def parse_opt():
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument('--yolo-weights', nargs='+', type=Path, default=WEIGHTS / 'yolov5m.pt', help='model.pt path(s)')
+#     parser.add_argument('--reid-weights', type=Path, default=WEIGHTS / 'osnet_x0_25_msmt17.pt')
+#     parser.add_argument('--tracking-method', type=str, default='strongsort', help='strongsort, ocsort, bytetrack')
+#     parser.add_argument('--source', type=str, default='0', help='file/dir/URL/glob, 0 for webcam')  
+#     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
+#     parser.add_argument('--conf-thres', type=float, default=0.5, help='confidence threshold')
+#     parser.add_argument('--iou-thres', type=float, default=0.5, help='NMS IoU threshold')
+#     parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
+#     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+#     parser.add_argument('--show-vid', action='store_true', help='display tracking video results')
+#     parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
+#     parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
+#     parser.add_argument('--save-crop', action='store_true', help='save cropped prediction boxes')
+#     parser.add_argument('--save-vid', action='store_true', help='save video tracking results')
+#     parser.add_argument('--nosave', action='store_true', help='do not save images/videos')
+#     # class 0 is person, 1 is bycicle, 2 is car... 79 is oven
+#     parser.add_argument('--classes', nargs='+', type=int, help='filter by class: --classes 0, or --classes 0 2 3')
+#     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
+#     parser.add_argument('--augment', action='store_true', help='augmented inference')
+#     parser.add_argument('--visualize', action='store_true', help='visualize features')
+#     parser.add_argument('--update', action='store_true', help='update all models')
+#     parser.add_argument('--project', default=ROOT / 'runs/track', help='save results to project/name')
+#     parser.add_argument('--name', default='exp', help='save results to project/name')
+#     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
+#     parser.add_argument('--line-thickness', default=2, type=int, help='bounding box thickness (pixels)')
+#     parser.add_argument('--hide-labels', default=False, action='store_true', help='hide labels')
+#     parser.add_argument('--hide-conf', default=False, action='store_true', help='hide confidences')
+#     parser.add_argument('--hide-class', default=False, action='store_true', help='hide IDs')
+#     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
+#     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
+#     parser.add_argument('--vid-stride', type=int, default=30, help='video frame-rate stride')
+#     parser.add_argument('--save-to-numpy-sample', default=False, action='store_true', help='save tracks to a numpy file for further testing')
+#     opt = parser.parse_args()
+#     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
+#     print_args(vars(opt))
+#     return opt
 
-def parse_opt():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--yolo-weights', nargs='+', type=Path, default=WEIGHTS / 'yolov5m.pt', help='model.pt path(s)')
-    parser.add_argument('--reid-weights', type=Path, default=WEIGHTS / 'osnet_x0_25_msmt17.pt')
-    parser.add_argument('--tracking-method', type=str, default='strongsort', help='strongsort, ocsort, bytetrack')
-    parser.add_argument('--source', type=str, default='0', help='file/dir/URL/glob, 0 for webcam')  
-    parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
-    parser.add_argument('--conf-thres', type=float, default=0.5, help='confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.5, help='NMS IoU threshold')
-    parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
-    parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
-    parser.add_argument('--show-vid', action='store_true', help='display tracking video results')
-    parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
-    parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
-    parser.add_argument('--save-crop', action='store_true', help='save cropped prediction boxes')
-    parser.add_argument('--save-vid', action='store_true', help='save video tracking results')
-    parser.add_argument('--nosave', action='store_true', help='do not save images/videos')
-    # class 0 is person, 1 is bycicle, 2 is car... 79 is oven
-    parser.add_argument('--classes', nargs='+', type=int, help='filter by class: --classes 0, or --classes 0 2 3')
-    parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
-    parser.add_argument('--augment', action='store_true', help='augmented inference')
-    parser.add_argument('--visualize', action='store_true', help='visualize features')
-    parser.add_argument('--update', action='store_true', help='update all models')
-    parser.add_argument('--project', default=ROOT / 'runs/track', help='save results to project/name')
-    parser.add_argument('--name', default='exp', help='save results to project/name')
-    parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
-    parser.add_argument('--line-thickness', default=2, type=int, help='bounding box thickness (pixels)')
-    parser.add_argument('--hide-labels', default=False, action='store_true', help='hide labels')
-    parser.add_argument('--hide-conf', default=False, action='store_true', help='hide confidences')
-    parser.add_argument('--hide-class', default=False, action='store_true', help='hide IDs')
-    parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
-    parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
-    parser.add_argument('--vid-stride', type=int, default=30, help='video frame-rate stride')
-    parser.add_argument('--save-to-numpy-sample', default=False, action='store_true', help='save tracks to a numpy file for further testing')
-    opt = parser.parse_args()
-    opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
-    print_args(vars(opt))
-    return opt
-
-
-def main(opt):
-    check_requirements(requirements=ROOT / 'requirements.txt', exclude=('tensorboard', 'thop'))
-    run(**vars(opt))
-
+@app.route('/run_track', methods=["POST"])
+def run_track():
+    data = request.form.to_dict()
+    opt.update(data)
+    run(**opt)
 
 if __name__ == "__main__":
-    opt = parse_opt()
-    main(opt)
+    # opt = parse_opt()
+    check_requirements(requirements=ROOT / 'requirements.txt', exclude=('tensorboard', 'thop'))
+    app.run(host='0.0.0.0', port=5757, debug=True)

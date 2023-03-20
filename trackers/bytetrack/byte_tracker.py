@@ -157,11 +157,13 @@ class STrack(BaseTrack):
         # print('------- new frame max_score %s, latest score %s' % (str(self.max_score), str(new_track.score)))
         if new_track.score > self.max_score:
             img_crop = self.extract_image_patch(img, new_track.tlwh)
+
             if img_crop is not None:
                 retval, buffer = cv2.imencode('.jpg', img_crop, encode_param)
                 image_string = base64.b64encode(buffer).decode('utf-8')
             else:
                 image_string = None
+            
             self.best_image = image_string
             self.max_score = new_track.score
             # print('!!!!!!!! track updated, new score: %s' % str(self.max_score))
@@ -404,8 +406,11 @@ class BYTETracker(object):
             output.append(t.cls)
             # output.append(trajectory)
             outputs.append(output)
-        # if len(removed_stracks) > 0:
-        #     print(dets[0])
+        if len(removed_stracks) > 0:
+            # assert removed_stracks[0].large_image == removed_stracks[0].best_image
+            if removed_stracks[0].large_image == removed_stracks[0].best_image:
+                print('!!!!!!!!!!!!!!!!!!')
+            print(dets[0])
 
         return [outputs, removed_stracks]
 
