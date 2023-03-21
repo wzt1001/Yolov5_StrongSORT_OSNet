@@ -494,7 +494,7 @@ def run(
         # change needed! only include single video file
         vid.release()
         # video_path = vid.filename
-        upload_single_file_to_s3_async(save_video_path, os.path.join(output_s3_path, task_id + '.mp4'))
+        upload_single_file(save_video_path, os.path.join(output_s3_path, task_id + '.mp4'))
 
     # save all results to a numpy file in root
     if save_to_numpy_sample:
@@ -505,9 +505,9 @@ def run(
         with open(local_tmp_json_path, 'w') as outfile:
             json.dump(npy_file, outfile)
         # move json file to s3
-        upload_single_file_to_s3_async(local_tmp_json_path, os.path.join(output_s3_path, task_id + '.json'))
+        upload_single_file(local_tmp_json_path, os.path.join(output_s3_path, task_id + '.json'))
 
-    return
+    return task_id
     # Print results
     # t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
     # LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS, %.1fms {tracking_method} update per image at shape {(1, 3, *imgsz)}' % t)
@@ -569,9 +569,10 @@ def invocation():
     opt['use_single_file_s3'] = bool(data.get('use_single_file_s3', False))
     opt['output_s3_path'] = data.get('output_s3_path', 's3://sagemaker-us-east-1-123456789012/track')
     opt['save_vid'] = bool(data.get('save_vid', False))
-
+    opt['save_to_json_sample'] = bool(data.get('save_to_json_sample', False))
     LOGGER.info('running new request task')
-    run(**opt)
+    task_id = run(**opt)
+    return task_id
 
 @app.route('/ping', methods=["GET"])
 def ping():
