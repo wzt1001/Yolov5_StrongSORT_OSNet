@@ -406,11 +406,6 @@ class BYTETracker(object):
             output.append(t.cls)
             # output.append(trajectory)
             outputs.append(output)
-        if len(removed_stracks) > 0:
-            # assert removed_stracks[0].large_image == removed_stracks[0].best_image
-            if removed_stracks[0].large_image == removed_stracks[0].best_image:
-                print('!!!!!!!!!!!!!!!!!!')
-            print(dets[0])
 
         return [outputs, removed_stracks]
 

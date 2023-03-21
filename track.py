@@ -49,6 +49,7 @@ from yolov5.utils.torch_utils import select_device, time_sync
 from yolov5.utils.plots import Annotator, colors, save_one_box
 from trackers.multi_tracker_zoo import create_tracker
 
+# default options
 opt = {
         'yolo_weights': ['./weights/yolov5m.pt'],
         'reid_weights': './weights/osnet_x0_25_market1501.pt',
@@ -79,7 +80,11 @@ opt = {
         'hide_class': False,
         'half': False,
         'dnn': False,
-        'use_local_json_file': False
+        'use_local_json_file': True,
+        'use_single_file_s3': False,
+        'save_to_json_sample': False,
+        'vid_stride': 1,
+        'output_s3_path': 's3://abc/'
     }
 
 # by zwang
@@ -103,10 +108,18 @@ KINESIS_STREAM_ID = config['reid_settings']['kinesis_stream_id']
 kinesis_client=boto3.client('kinesis')
 npy_file = []
 
+def parse_s3_path(src_s3_path):
+    """parse s3 path into bucket name and s3 path"""
+    # parse full s3 path into bucket name and s3 path
+    bucket_name, s3_path = src_s3_path.replace('s3://', '').split('/', 1)
+    return bucket_name, s3_path
+
 def download_single_file_from_s3(src_s3_path, src_local_path):
     """download a single file to local from S3 path"""
     try:
-        s3.download_file(BUCKET_NAME, src_s3_path, src_local_path)
+        # parse full s3 path into bucket name and s3 path
+        bucket_name, s3_path = parse_s3_path(src_s3_path)
+        s3.download_file(bucket_name, s3_path, src_local_path)
     except Exception as e:
         LOGGER.error(f'Download data failed. | src: {src_s3_path} | dest: {src_local_path} | Exception: {e}')
         return False
@@ -207,10 +220,24 @@ def run(
         dnn=False,  # use OpenCV DNN for ONNX inference
         vid_stride=1,  # video frame-rate stride,
         save_to_numpy_sample=False, # save results to numpy as a sample for re-id
+        use_single_file_s3=False,
         use_local_json_file=False, # using 
+        save_to_json_sample=False, # save results to json as a sample for re-id,
+        output_s3_path = None # output s3 bucket
 ):
-
-    if use_local_json_file:
+    task_id = str(uuid4())
+    if use_single_file_s3:
+        if not os.path.exists('tmp_files'):
+            os.makedirs('tmp_files')
+        # generate a unique uuid for the video
+        tmp_video_path = os.path.join('tmp_files', task_id + '.mp4')
+        download_single_file_from_s3(source, tmp_video_path)
+        source_config = {'source': [{
+            "camera_id": "test-camera",
+			"url": tmp_video_path,
+			"ip": "",
+			"floor_id": "test"}], 'type': 'video_file'}
+    elif use_local_json_file:
         source = str(source)
         # save_img = not nosave and not source.endswith('.txt')  # save inference images
         
@@ -393,14 +420,6 @@ def run(
                     npy_file.append({'track_id':t.track_id, 'max_score':str(t.max_score), 'max_size':str(t.max_size),
                                      'best_image':best_image_path, 'large_image':large_image_path, 'frame_idx':frame_idx, 
                                      'start_time': t.start_time, 'end_time':datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 'trajectory': t.trajectory})
-                    # print(t.track_id) 3f9c
-                    # print(t.best_image)
-                    # print(t.large_image)
-                    # print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-                    # print(t.best_image)
-                    # print(t.large_image)
-                    # print(track_data)
-                    # removed_track = track_data.pop(t.track_id)
 
                     ################################
                     # add post function here/zwang #
@@ -463,15 +482,32 @@ def run(
                     else:  # stream
                         fps, w, h = 30, im0.shape[1], im0.shape[0]
                     save_path = str(Path(save_path).with_suffix('.mp4'))  # force *.mp4 suffix on results videos
+                    # for temp purpose
+                    save_video_path = save_path
                     vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                 vid_writer[i].write(im0)
 
             prev_frames[i] = curr_frames[i]
 
+    # save vid_writer file to s3
+    for vid in vid_writer:
+        # change needed! only include single video file
+        vid.release()
+        # video_path = vid.filename
+        upload_single_file_to_s3_async(save_video_path, os.path.join(output_s3_path, task_id + '.mp4'))
+
     # save all results to a numpy file in root
     if save_to_numpy_sample:
-        np.save("sample.npy", npy_file)
+        np.save(task_id + ".npy", npy_file)
+    if save_to_json_sample:
+        # save npy_file to json file
+        local_tmp_json_path = os.path.join('tmp_files', task_id + '.json')
+        with open(local_tmp_json_path, 'w') as outfile:
+            json.dump(npy_file, outfile)
+        # move json file to s3
+        upload_single_file_to_s3_async(local_tmp_json_path, os.path.join(output_s3_path, task_id + '.json'))
 
+    return
     # Print results
     # t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
     # LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS, %.1fms {tracking_method} update per image at shape {(1, 3, *imgsz)}' % t)
@@ -481,52 +517,68 @@ def run(
     # if update:
     #     strip_optimizer(yolo_weights)  # update model (to fix SourceChangeWarning)
 
-# def parse_opt():
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument('--yolo-weights', nargs='+', type=Path, default=WEIGHTS / 'yolov5m.pt', help='model.pt path(s)')
-#     parser.add_argument('--reid-weights', type=Path, default=WEIGHTS / 'osnet_x0_25_msmt17.pt')
-#     parser.add_argument('--tracking-method', type=str, default='strongsort', help='strongsort, ocsort, bytetrack')
-#     parser.add_argument('--source', type=str, default='0', help='file/dir/URL/glob, 0 for webcam')  
-#     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
-#     parser.add_argument('--conf-thres', type=float, default=0.5, help='confidence threshold')
-#     parser.add_argument('--iou-thres', type=float, default=0.5, help='NMS IoU threshold')
-#     parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
-#     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
-#     parser.add_argument('--show-vid', action='store_true', help='display tracking video results')
-#     parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
-#     parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
-#     parser.add_argument('--save-crop', action='store_true', help='save cropped prediction boxes')
-#     parser.add_argument('--save-vid', action='store_true', help='save video tracking results')
-#     parser.add_argument('--nosave', action='store_true', help='do not save images/videos')
-#     # class 0 is person, 1 is bycicle, 2 is car... 79 is oven
-#     parser.add_argument('--classes', nargs='+', type=int, help='filter by class: --classes 0, or --classes 0 2 3')
-#     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
-#     parser.add_argument('--augment', action='store_true', help='augmented inference')
-#     parser.add_argument('--visualize', action='store_true', help='visualize features')
-#     parser.add_argument('--update', action='store_true', help='update all models')
-#     parser.add_argument('--project', default=ROOT / 'runs/track', help='save results to project/name')
-#     parser.add_argument('--name', default='exp', help='save results to project/name')
-#     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
-#     parser.add_argument('--line-thickness', default=2, type=int, help='bounding box thickness (pixels)')
-#     parser.add_argument('--hide-labels', default=False, action='store_true', help='hide labels')
-#     parser.add_argument('--hide-conf', default=False, action='store_true', help='hide confidences')
-#     parser.add_argument('--hide-class', default=False, action='store_true', help='hide IDs')
-#     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
-#     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
-#     parser.add_argument('--vid-stride', type=int, default=30, help='video frame-rate stride')
-#     parser.add_argument('--save-to-numpy-sample', default=False, action='store_true', help='save tracks to a numpy file for further testing')
-#     opt = parser.parse_args()
-#     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
-#     print_args(vars(opt))
-#     return opt
+def parse_opt():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--yolo-weights', nargs='+', type=Path, default=WEIGHTS / 'yolov5m.pt', help='model.pt path(s)')
+    parser.add_argument('--reid-weights', type=Path, default=WEIGHTS / 'osnet_x0_25_msmt17.pt')
+    parser.add_argument('--tracking-method', type=str, default='strongsort', help='strongsort, ocsort, bytetrack')
+    parser.add_argument('--source', type=str, default='0', help='file/dir/URL/glob, 0 for webcam')  
+    parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
+    parser.add_argument('--conf-thres', type=float, default=0.5, help='confidence threshold')
+    parser.add_argument('--iou-thres', type=float, default=0.5, help='NMS IoU threshold')
+    parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
+    parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    parser.add_argument('--show-vid', action='store_true', help='display tracking video results')
+    parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
+    parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
+    parser.add_argument('--save-crop', action='store_true', help='save cropped prediction boxes')
+    parser.add_argument('--save-vid', action='store_true', help='save video tracking results')
+    parser.add_argument('--nosave', action='store_true', help='do not save images/videos')
+    # class 0 is person, 1 is bycicle, 2 is car... 79 is oven
+    parser.add_argument('--classes', nargs='+', type=int, help='filter by class: --classes 0, or --classes 0 2 3')
+    parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
+    parser.add_argument('--augment', action='store_true', help='augmented inference')
+    parser.add_argument('--visualize', action='store_true', help='visualize features')
+    parser.add_argument('--update', action='store_true', help='update all models')
+    parser.add_argument('--project', default=ROOT / 'runs/track', help='save results to project/name')
+    parser.add_argument('--name', default='exp', help='save results to project/name')
+    parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
+    parser.add_argument('--line-thickness', default=2, type=int, help='bounding box thickness (pixels)')
+    parser.add_argument('--hide-labels', default=False, action='store_true', help='hide labels')
+    parser.add_argument('--hide-conf', default=False, action='store_true', help='hide confidences')
+    parser.add_argument('--hide-class', default=False, action='store_true', help='hide IDs')
+    parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
+    parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
+    parser.add_argument('--vid-stride', type=int, default=30, help='video frame-rate stride')
+    parser.add_argument('--save-to-numpy-sample', default=False, action='store_true', help='save tracks to a numpy file for further testing')
+    opt = parser.parse_args()
+    opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
+    print_args(vars(opt))
+    return opt
 
-@app.route('/run_track', methods=["POST"])
-def run_track():
+@app.route('/invocation', methods=["POST"])
+def invocation():
     data = request.form.to_dict()
     opt.update(data)
+    opt['conf_thres'] = float(data.get('conf_thres', 0.25))
+    opt['iou_thres'] = float(data.get('iou_thres', 0.45))
+    opt['use_local_json_file'] = bool(data.get('use_local_json_file', False))
+    opt['source'] = data.get('source', './local_test.json')
+    opt['vid_stride'] = int(data.get('vid_stride', 1))
+    opt['tracking_method'] = data.get('tracking_method', 'bytetrack')
+    opt['use_single_file_s3'] = bool(data.get('use_single_file_s3', False))
+    opt['output_s3_path'] = data.get('output_s3_path', 's3://sagemaker-us-east-1-123456789012/track')
+    opt['save_vid'] = bool(data.get('save_vid', False))
+
+    LOGGER.info('running new request task')
     run(**opt)
+
+@app.route('/ping', methods=["GET"])
+def ping():
+    return "pong"
 
 if __name__ == "__main__":
     # opt = parse_opt()
     check_requirements(requirements=ROOT / 'requirements.txt', exclude=('tensorboard', 'thop'))
+    # run(**opt)
     app.run(host='0.0.0.0', port=5757, debug=True)
