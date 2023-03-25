@@ -10,3 +10,7 @@ __pycache__/
 *.onnx
 *.engine
 temp/
+tmp_files/
+tmp_video/
+runs/
+.DS_Store
