@@ -650,4 +650,4 @@ if __name__ == "__main__":
     # opt = parse_opt()
     check_requirements(requirements=ROOT / 'requirements.txt', exclude=('tensorboard', 'thop'))
     # run(**opt)
-    app.run(host='0.0.0.0', port=5757, debug=True)
+    app.run(host='0.0.0.0', port=8080, debug=True)
