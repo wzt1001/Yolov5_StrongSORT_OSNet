@@ -109,7 +109,7 @@ RESULT_ENDPOINT = config['reid_settings']['result_endpoint']
 LOCAL_TEMP_PATH = config['reid_settings']['local_temp_path']
 KINESIS_STREAM_ID = config['reid_settings']['kinesis_stream_id']
 
-kinesis_client=boto3.client('kinesis')
+# kinesis_client=boto3.client('kinesis', region_name=config['reid_settings']['region'])
 npy_file = []
 
 def get_md5_from_s3(s3_path):
