@@ -14,6 +14,7 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import json
+import hashlib
 
 import numpy as np
 import boto3
@@ -110,6 +111,28 @@ KINESIS_STREAM_ID = config['reid_settings']['kinesis_stream_id']
 
 kinesis_client=boto3.client('kinesis')
 npy_file = []
+
+def get_md5_from_s3(s3_path):
+    """get md5 from s3 path"""
+    try:
+        # parse full s3 path into bucket name and s3 path
+        bucket_name, s3_path = parse_s3_path(s3_path)
+        md5 = s3.head_object(Bucket=bucket_name, Key=s3_path)['ETag'].replace('"', '')
+    except Exception as e:
+        LOGGER.error(f'Get md5 failed. | src: {s3_path} | Exception: {e}')
+        return False
+    LOGGER.info(f'Get md5 successful. | src: {s3_path} | md5: {md5}')
+    return md5
+
+def get_md5_from_file(file_path):
+    """get md5 from file path"""
+    try:
+        md5 = hashlib.md5(open(file_path, 'rb').read()).hexdigest()
+    except Exception as e:
+        LOGGER.error(f'Get md5 failed. | src: {file_path} | Exception: {e}')
+        return False
+    LOGGER.info(f'Get md5 successful. | src: {file_path} | md5: {md5}')
+    return md5
 
 def parse_s3_path(src_s3_path):
     """parse s3 path into bucket name and s3 path"""
@@ -230,17 +253,37 @@ def run(
         output_s3_path = None # output s3 bucket
 ):
     global task_list
+
+    # check if file need to be downloaded from s3
     if use_single_file_s3:
         if not os.path.exists('tmp_files'):
             os.makedirs('tmp_files')
         # generate a unique uuid for the video
-        tmp_video_path = os.path.join('tmp_files', task_id + '.mp4')
-        download_single_file_from_s3(source, tmp_video_path)
-        source_config = {'source': [{
-            "camera_id": "test-camera",
-			"url": tmp_video_path,
-			"ip": "",
-			"floor_id": "test"}], 'type': 'video_file'}
+        # get the file name from the s3 path
+        file_name = source.split('/')[-1]
+        tmp_video_path = os.path.join('tmp_files', file_name)
+        # tmp_video_path = os.path.join('tmp_files', task_id + '.mp4')
+        # get md5 of file from s3
+
+        LOGGER.info(f'begin to download file from s3 to {tmp_video_path}')
+        # check if the file is already downloaded
+        if os.path.exists(tmp_video_path):
+            md5 = get_md5_from_s3(source)
+            md5 == get_md5_from_file(tmp_video_path)
+            LOGGER.info(f'file from s3 already downloaded to {tmp_video_path}')
+        
+        elif download_single_file_from_s3(source, tmp_video_path):
+            source_config = {'source': [{
+                "camera_id": "test-camera",
+                "url": tmp_video_path,
+                "ip": "",
+                "floor_id": "test"}], 'type': 'video_file'}
+            LOGGER.info(f'file from s3 downloaded to {tmp_video_path}')
+        else:
+            LOGGER.error(f'file from s3 download failed')
+            task_list[task_id]['status'] = 'failed'
+            return 
+        
     elif use_local_json_file:
         source = str(source)
         # save_img = not nosave and not source.endswith('.txt')  # save inference images
@@ -271,6 +314,7 @@ def run(
     else:
         assert "source type not supported"
 
+    task_list[task_id] = {'status': 'downloaded', 'progress': '0', 'seen': 0}
     # is_url = source.lower().startswith(('rtsp://', 'rtmp://', 'http://', 'https://'))
     # webcam = source.isnumeric() or source.endswith('.txt') or (is_url and not is_file)
     # if is_url and is_file:
@@ -288,12 +332,14 @@ def run(
     (save_dir / 'tracks' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
 
     # Load model
+    LOGGER.info(f'loading yolo model from {yolo_weights}')
     device = select_device(device)
     model = DetectMultiBackend(yolo_weights, device=device, dnn=dnn, data=None, fp16=half)
     stride, names, pt = model.stride, model.names, model.pt
     imgsz = check_img_size(imgsz, s=stride)  # check image size
 
     # Dataloader
+    LOGGER.info(f'loading streams or images from {source_config["source"]}')
     if webcam:
         show_vid = check_imshow()
         dataset = LoadStreams([i['url'] for i in source_config['source']], img_size=imgsz, stride=stride, auto=pt, vid_stride=vid_stride)
@@ -305,6 +351,7 @@ def run(
     vid_path, vid_writer, txt_path = [None] * nr_sources, [None] * nr_sources, [None] * nr_sources
 
     # Create as many strong sort instances as there are video sources
+    LOGGER.info(f'creating {nr_sources} strong sort trackers')
     tracker_list = []
     for i in range(nr_sources):
         tracker = create_tracker(tracking_method, reid_weights, device, half)
@@ -323,9 +370,10 @@ def run(
     total_frame_cnt = 0
 
     for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
-        
         total_frame_cnt += 1
         print('====== %s' % str(total_frame_cnt))
+
+        task_list[task_id]['progress'] = str(int(total_frame_cnt / len(dataset) * 100))
 
         t1 = time_sync()
         im = torch.from_numpy(im).to(device)
@@ -588,6 +636,11 @@ def invocation():
     thread.daemon = True
     thread.start()
     return task_id
+
+@app.route('/status/<task_id>', methods=["GET"])
+def status(task_id):
+    global task_list
+    return task_list.get(task_id, {'status': 'not found'})
 
 @app.route('/ping', methods=["GET"])
 def ping():
