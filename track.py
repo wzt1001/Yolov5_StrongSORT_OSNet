@@ -49,6 +49,9 @@ from yolov5.utils.torch_utils import select_device, time_sync
 from yolov5.utils.plots import Annotator, colors, save_one_box
 from trackers.multi_tracker_zoo import create_tracker
 
+global task_list
+task_list = {}
+
 # default options
 opt = {
         'yolo_weights': ['./weights/yolov5m.pt'],
@@ -189,6 +192,7 @@ track_data = {}
 
 @torch.no_grad()
 def run(
+        task_id='',
         source='0',
         yolo_weights=WEIGHTS / 'yolov5m.pt',  # model.pt path(s),
         reid_weights=WEIGHTS / 'osnet_x0_25_msmt17.pt',  # model.pt path,
@@ -225,7 +229,7 @@ def run(
         save_to_json_sample=False, # save results to json as a sample for re-id,
         output_s3_path = None # output s3 bucket
 ):
-    task_id = str(uuid4())
+    global task_list
     if use_single_file_s3:
         if not os.path.exists('tmp_files'):
             os.makedirs('tmp_files')
@@ -507,6 +511,7 @@ def run(
         # move json file to s3
         upload_single_file(local_tmp_json_path, os.path.join(output_s3_path, task_id + '.json'))
 
+    task_list[task_id] = {'status': 'done', 'output_path': output_s3_path, 'finished_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
     return task_id
     # Print results
     # t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
@@ -558,6 +563,8 @@ def parse_opt():
 
 @app.route('/invocation', methods=["POST"])
 def invocation():
+    global task_list
+
     data = request.form.to_dict()
     opt.update(data)
     opt['conf_thres'] = float(data.get('conf_thres', 0.25))
@@ -571,7 +578,15 @@ def invocation():
     opt['save_vid'] = bool(data.get('save_vid', False))
     opt['save_to_json_sample'] = bool(data.get('save_to_json_sample', False))
     LOGGER.info('running new request task')
-    task_id = run(**opt)
+    # task_id = run(**opt)
+    # run run function in thread
+    task_id = str(uuid4())
+    task_list[task_id] = {'status': 'running'}
+    opt['task_id'] = task_id
+    # run(**opt)
+    thread = threading.Thread(target=run, kwargs=(opt))
+    thread.daemon = True
+    thread.start()
     return task_id
 
 @app.route('/ping', methods=["GET"])
